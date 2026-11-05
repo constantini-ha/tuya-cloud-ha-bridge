@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from ..const import LOGGER
 from .models import (
     CandidateTarget,
     DPDefinition,
@@ -52,7 +53,7 @@ def resolve_dp_routes(
         (dpcode, False) for dpcode in spec.optional_dps
     ]
 
-    for dpcode, _required in ordered_dps:
+    for dpcode, required in ordered_dps:
         # Find the DPDefinition inside the spec.
         dp_def = _find_dp_definition(spec, dpcode)
         if dp_def is None:
@@ -65,7 +66,9 @@ def resolve_dp_routes(
             )
             continue
 
-        resolve_result = _resolve_single_dp(device_profile, dp_def, assigned)
+        resolve_result = _resolve_single_dp(
+            device_profile, dp_def, assigned, required=required
+        )
 
         if not resolve_result.matched:
             diagnostics.append(
@@ -182,6 +185,7 @@ def _resolve_single_dp(
     device_profile: DeviceProfile,
     dp_def: DPDefinition,
     assigned: dict[str, str | None],
+    required: bool = False,
 ) -> DPResolveResult:
     """Attempt to match *dp_def* to an entity in *device_profile*.
 
@@ -207,11 +211,25 @@ def _resolve_single_dp(
         # (features == []) the hints are the ONLY discriminator, so a preferred
         # keyword match is made mandatory; feature-gated targets keep soft rank.
         if dp_def.match_hints is not None:
-            candidates = _rank_by_match_hints(
-                candidates,
-                dp_def.match_hints,
-                require_preferred=not target.features,
+            strict = not target.features
+            ranked = _rank_by_match_hints(
+                candidates, dp_def.match_hints, require_preferred=strict
             )
+            if not ranked and strict and required:
+                # preferred_keywords are locale-specific, so entities named in
+                # another language can never satisfy them; a required dp that
+                # stays unmatched drops the whole device anyway.
+                ranked = _rank_by_match_hints(
+                    candidates, dp_def.match_hints, require_preferred=False
+                )
+                if ranked:
+                    LOGGER.debug(
+                        "dp_routing: %s fell back to soft ranking (no preferred "
+                        "keyword hit among %d candidate(s))",
+                        dp_def.dpcode,
+                        len(ranked),
+                    )
+            candidates = ranked
 
         # Pick the first entity that respects the component mutex.
         for entity in candidates:
@@ -342,7 +360,7 @@ def _rank_by_match_hints(
         # sensor on a purifier that exposes no filter entity).
         filtered = [entity for entity in filtered if _score(entity) > 0]
 
-    filtered.sort(key=_score, reverse=True)
+    filtered.sort(key=lambda entity: (-_score(entity), entity.entity_id))
     return filtered
 
 
