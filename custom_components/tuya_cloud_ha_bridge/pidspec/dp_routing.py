@@ -45,6 +45,9 @@ def resolve_dp_routes(
     # component mutex is respected: an entity may only be shared across DPs
     # when they carry the same component_hint (or both have no hint).
     assigned: dict[str, str | None] = {}  # entity_id → component_hint
+    # Set once a required dp needs the soft fallback: the locale mismatch is a
+    # property of the device, so optional dps of the same device follow suit.
+    fallback_state: dict[str, bool] = {}
 
     # Process required DPs first so they get priority in entity assignment.
     ordered_dps: list[tuple[str, bool]] = [
@@ -67,7 +70,11 @@ def resolve_dp_routes(
             continue
 
         resolve_result = _resolve_single_dp(
-            device_profile, dp_def, assigned, required=required
+            device_profile,
+            dp_def,
+            assigned,
+            allow_fallback=required or fallback_state.get("used", False),
+            fallback_state=fallback_state,
         )
 
         if not resolve_result.matched:
@@ -185,7 +192,8 @@ def _resolve_single_dp(
     device_profile: DeviceProfile,
     dp_def: DPDefinition,
     assigned: dict[str, str | None],
-    required: bool = False,
+    allow_fallback: bool = False,
+    fallback_state: dict[str, bool] | None = None,
 ) -> DPResolveResult:
     """Attempt to match *dp_def* to an entity in *device_profile*.
 
@@ -215,7 +223,7 @@ def _resolve_single_dp(
             ranked = _rank_by_match_hints(
                 candidates, dp_def.match_hints, require_preferred=strict
             )
-            if not ranked and strict and required:
+            if not ranked and strict and allow_fallback:
                 # preferred_keywords are locale-specific, so entities named in
                 # another language can never satisfy them; a required dp that
                 # stays unmatched drops the whole device anyway.
@@ -223,6 +231,8 @@ def _resolve_single_dp(
                     candidates, dp_def.match_hints, require_preferred=False
                 )
                 if ranked:
+                    if fallback_state is not None:
+                        fallback_state["used"] = True
                     LOGGER.debug(
                         "dp_routing: %s fell back to soft ranking (no preferred "
                         "keyword hit among %d candidate(s))",
